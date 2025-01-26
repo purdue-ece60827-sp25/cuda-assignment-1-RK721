@@ -12,16 +12,70 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort)
 
 __global__ 
 void saxpy_gpu (float* x, float* y, float scale, int size) {
-	//	Insert GPU SAXPY kernel code here
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	if (i < size)
+	{
+    	y[i] = scale*x[i] + y[i];
+	}
 }
 
 int runGpuSaxpy(int vectorSize) {
 
 	std::cout << "Hello GPU Saxpy!\n";
 
-	//	Insert code here
-	std::cout << "Lazy, you are!\n";
-	std::cout << "Write code, you must\n";
+	srand(time(NULL));
+	float* hX = new float[vectorSize];
+	float* hY = new float[vectorSize];
+	float* hYCopy = new float[vectorSize];
+	float a = (float)(rand() % 100);
+	float* dX;
+	float* dY;
+
+	vectorInit(hX, vectorSize);
+	vectorInit(hY, vectorSize);
+	std::memcpy(hYCopy, hY, vectorSize * sizeof(float));
+
+    cudaMalloc(&dX, vectorSize*sizeof(float));
+    cudaMalloc(&dY, vectorSize*sizeof(float));
+
+    cudaMemcpy(dX, hX, vectorSize*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(dY, hY, vectorSize*sizeof(float), cudaMemcpyHostToDevice);
+
+	#ifndef DEBUG_PRINT_DISABLE 
+		printf("\n Adding vectors : \n");
+		printf(" scale = %f\n", a);
+		printf(" a = { ");
+		for (int i = 0; i < 5; ++i) {
+			printf("%3.4f, ", hX[i]);
+		}
+		printf(" ... }\n");
+		printf(" b = { ");
+		for (int i = 0; i < 5; ++i) {
+			printf("%3.4f, ", hY[i]);
+		}
+		printf(" ... }\n");
+	#endif
+
+	saxpy_gpu<<<(vectorSize+255)/256, 256>>>(dX, dY, a, vectorSize);
+
+	cudaMemcpy(hY, dY, vectorSize*sizeof(float), cudaMemcpyDeviceToHost);
+
+	#ifndef DEBUG_PRINT_DISABLE 
+		printf(" c = { ");
+		for (int i = 0; i < 5; ++i) {
+			printf("%3.4f, ", hY[i]);
+		}
+		printf(" ... }\n");
+	#endif
+
+	int errorCount = verifyVector(hX, hYCopy, hY, a, vectorSize);
+	std::cout << "Found " << errorCount << " / " << vectorSize << " errors \n";
+
+	cudaFree(dX);
+    cudaFree(dY);
+
+	delete[] hX;
+	delete[] hY;
 
 	return 0;
 }
