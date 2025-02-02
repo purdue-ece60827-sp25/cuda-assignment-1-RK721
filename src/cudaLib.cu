@@ -12,10 +12,10 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort)
 
 __global__ 
 void saxpy_gpu (float* x, float* y, float scale, int size) {
-	int i = blockIdx.x*blockDim.x + threadIdx.x;
-	if (i < size)
+	int lThreadID = blockIdx.x*blockDim.x + threadIdx.x;
+	if (lThreadID < size)
 	{
-    	y[i] = scale*x[i] + y[i];
+    	y[lThreadID] = scale*x[lThreadID] + y[lThreadID];
 	}
 }
 
@@ -94,12 +94,44 @@ int runGpuSaxpy(int vectorSize) {
 
 __global__
 void generatePoints (uint64_t * pSums, uint64_t pSumSize, uint64_t sampleSize) {
-	//	Insert code here
+	int lThreadID = blockIdx.x*blockDim.x + threadIdx.x;
+	if (lThreadID < pSumSize)
+	{
+		curandState_t rng;
+		curand_init(clock64(), lThreadID, 0, &rng);
+
+		uint64_t lHitCount = 0;
+
+		for (uint64_t i = 0; i < sampleSize; i++)
+		{
+			float x = curand_uniform(&rng);
+			float y = curand_uniform(&rng);
+
+			if ((x*x + y*y) <= 1.0f)
+			{
+				lHitCount++;
+			}
+		}
+
+    	pSums[lThreadID] = lHitCount;
+	}
 }
 
 __global__ 
 void reduceCounts (uint64_t * pSums, uint64_t * totals, uint64_t pSumSize, uint64_t reduceSize) {
-	//	Insert code here
+	int lThreadID = blockIdx.x*blockDim.x + threadIdx.x;
+
+	uint64_t lSum = 0;
+
+	if (lThreadID < (pSumSize/reduceSize))
+	{
+		for (int i = lThreadID*reduceSize; (i < lThreadID*reduceSize + reduceSize) && (i < pSumSize); i++)
+		{
+			lSum += pSums[i];
+		}
+
+		totals[lThreadID] = lSum;
+	}
 }
 
 int runGpuMCPi (uint64_t generateThreadCount, uint64_t sampleSize, 
@@ -133,8 +165,45 @@ double estimatePi(uint64_t generateThreadCount, uint64_t sampleSize,
 	
 	double approxPi = 0;
 
-	//      Insert code here
-	std::cout << "Sneaky, you are ...\n";
-	std::cout << "Compute pi, you must!\n";
+	//uint64_t* h_pHitCount = new uint64_t[generateThreadCount];
+	uint64_t* h_pReducedTotals = new uint64_t[reduceThreadCount];
+
+	uint64_t* d_pHitCount;
+	uint64_t* d_pReducedTotals;
+
+	cudaMalloc(&d_pHitCount, generateThreadCount*sizeof(uint64_t));
+    cudaMalloc(&d_pReducedTotals, reduceThreadCount*sizeof(uint64_t));
+
+    //cudaMemcpy(d_pHitCount, h_pHitCount, generateThreadCount*sizeof(uint64_t), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pReducedTotals, h_pReducedTotals, reduceThreadCount*sizeof(uint64_t), cudaMemcpyHostToDevice);
+
+	generatePoints<<<(generateThreadCount+255)/256, 256>>>(d_pHitCount, generateThreadCount, sampleSize);
+
+	if(reduceThreadCount < 256)
+	{
+		reduceCounts<<<1, reduceThreadCount>>>(d_pHitCount, d_pReducedTotals, generateThreadCount, reduceSize);
+	}
+	else
+	{
+		reduceCounts<<<(reduceThreadCount+255)/256, 256>>>(d_pHitCount, d_pReducedTotals, generateThreadCount, reduceSize);
+	}
+
+	cudaMemcpy(h_pReducedTotals, d_pReducedTotals, reduceThreadCount*sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+	uint64_t lTotalHits = 0;
+	for (uint64_t i = 0; i < reduceThreadCount; i++)
+	{
+		lTotalHits += h_pReducedTotals[i];
+	}
+
+	uint64_t lTotalSamples = generateThreadCount * sampleSize;
+	approxPi = 4.0 * double(lTotalHits) / (double)lTotalSamples;
+
+	cudaFree(d_pHitCount);
+    cudaFree(d_pReducedTotals);
+
+	//delete[] h_pHitCount;
+	delete[] h_pReducedTotals;
+
 	return approxPi;
 }
